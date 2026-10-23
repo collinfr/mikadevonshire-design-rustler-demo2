@@ -1,0 +1,208 @@
+name: CodeMender Manual Trigger
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'CodeMender Command'
+        required: true
+        type: choice
+        options:
+          - 'find'
+          - 'verify'
+          - 'fix'
+          - 'hunt'
+          - 'all (find -> verify -> fix)'
+        default: 'find'
+      target_ref:
+        description: 'Target Branch, Tag, or Commit SHA'
+        required: true
+        default: 'main'
+      target_path:
+        description: 'Directory to scan ("all" for parallel per-folder scan, or specify e.g. "dvga", "juice-shop", or "." for monolithic)'
+        required: false
+        default: 'all'
+      vuln_id:
+        description: 'Vulnerability ID (e.g. 4149b888)'
+        required: false
+        default: ''
+      auto_create_pr:
+        description: 'Automatically author remediation PR upon fix'
+        required: true
+        type: boolean
+        default: false
+      skip_exploit_verification:
+        description: 'Skip dynamic exploit execution during verify (static verification only)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    name: Determine Scan Targets
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.determine_targets.outputs.targets }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.target_ref }}
+          persist-credentials: false
+
+      - name: Resolve Target Directories
+        id: determine_targets
+        env:
+          TARGET_PATH: ${{ inputs.target_path }}
+          CMD: ${{ inputs.command }}
+        run: |
+          python3 -c '
+          import os, json
+
+          target_path = os.environ.get("TARGET_PATH", "all").strip()
+          cmd = os.environ.get("CMD", "find").strip()
+
+          if cmd in ["verify", "fix", "hunt"] or target_path in [".", "root"]:
+              targets = ["."]
+          elif target_path in ["all", "all (parallel)", "*", ""]:
+              ignored = {".git", ".github", "worker", "scripts", "__pycache__", "artifacts", "cm-artifacts", "terraform"}
+              targets = []
+              for d in sorted(os.listdir(".")):
+                  if os.path.isdir(d) and d not in ignored and not d.startswith("."):
+                      has_code = False
+                      for root, dirs, files in os.walk(d):
+                          if any(f.endswith((".py", ".ts", ".js", ".go", ".java", ".c", ".cpp", ".rb", ".php", ".html", "Dockerfile", "package.json", "requirements.txt")) for f in files):
+                              has_code = True
+                              break
+                      if has_code:
+                          targets.append(d)
+              if not targets:
+                  targets = ["."]
+          elif "," in target_path:
+              targets = [p.strip() for p in target_path.split(",") if p.strip()]
+          else:
+              targets = [target_path]
+
+          print(f"Discovered targets: {targets}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"targets={json.dumps(targets)}\n")
+          '
+
+  manual-codemender-run:
+    name: CodeMender [${{ matrix.target_path }}]
+    needs: setup
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation OIDC token
+      security-events: write
+      checks: write
+      pull-requests: write
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target_path: ${{ fromJson(needs.setup.outputs.targets) }}
+    steps:
+      - name: Slugify Target Path
+        id: slug
+        env:
+          TARGET: ${{ matrix.target_path }}
+        run: |
+          if [ "${TARGET}" = "." ]; then
+            SLUG="root"
+          else
+            SLUG=$(echo "${TARGET}" | tr '/.' '_-')
+          fi
+          echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2.1.8
+        with:
+          workload_identity_provider: 'projects/675447268546/locations/global/workloadIdentityPools/codemender-pool/providers/github-provider'
+          service_account: 'codemender-ci-dispatcher@cm-gh-506516.iam.gserviceaccount.com'
+
+      - name: Trigger Cloud Run Worker Job
+        id: run_worker
+        env:
+          REPO_NAME: ${{ github.repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          TARGET_PATH: ${{ matrix.target_path }}
+          CMD: ${{ inputs.command }}
+          VULN_ID: ${{ inputs.vuln_id }}
+          AUTO_PR: ${{ inputs.auto_create_pr }}
+          SKIP_EXPLOIT: ${{ inputs.skip_exploit_verification }}
+          ACTOR_NAME: ${{ github.actor }}
+          GCP_REGION: ${{ vars.GCP_REGION || 'us-west1' }}
+        run: |
+          echo "🚀 Triggering Cloud Run execution for ${REPO_NAME} (${TARGET_REF}, path: ${TARGET_PATH})..."
+          gcloud run jobs execute codemender-worker \
+            --region="${GCP_REGION}" \
+            --wait \
+            --update-env-vars="REPO=${REPO_NAME},REF=${TARGET_REF},COMMAND=bash /entrypoint.sh,CM_ACTION=${CMD},SCAN_MODE=deep,SCAN_MODEL=gemini-3.8-flash,REMEDIATION_MODEL=gemini-4-argon,TARGET_PATH=${TARGET_PATH},VULN_ID=${VULN_ID},SKIP_EXPLOIT_VERIFICATION=${SKIP_EXPLOIT},AUTO_PR=${AUTO_PR},TRIGGER=manual,ACTOR=${ACTOR_NAME},ARTIFACTS_BUCKET=codemender-artifacts-cm-gh-506516"
+
+      - name: Generate Live Monitoring & Summary Links
+        if: always()
+        env:
+          CMD: ${{ inputs.command }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          TARGET_PATH: ${{ matrix.target_path }}
+          VULN_ID: ${{ inputs.vuln_id || 'N/A' }}
+          ACTOR_NAME: ${{ github.actor }}
+        run: |
+          CONSOLE_LOGS="https://console.cloud.google.com/run/jobs/details/us-west1/codemender-worker/executions?project=cm-gh-506516"
+          if [ "${CMD}" = "verify" ] || [ "${CMD}" = "fix" ]; then
+            MODEL_SUMMARY="gemini-4-argon"
+          elif [ "${CMD}" = "find" ]; then
+            MODEL_SUMMARY="gemini-3.8-flash (--deep)"
+          else
+            MODEL_SUMMARY="gemini-3.8-flash (--deep) / gemini-4-argon (fix)"
+          fi
+          
+          echo "## 🛡️ CodeMender Manual Run Dashboard" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Parameter | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| :--- | :--- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Command** | \`${CMD}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Model** | \`${MODEL_SUMMARY}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Target Ref** | \`${TARGET_REF}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Target Path** | \`${TARGET_PATH}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Vuln ID** | \`${VULN_ID}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Triggered By** | @${ACTOR_NAME} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Cloud Run Console** | [View Real-Time Logs & Traces](${CONSOLE_LOGS}) |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download & Publish Artifacts
+        if: always()
+        env:
+          REPO_NAME: ${{ github.repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          TARGET_PATH: ${{ matrix.target_path }}
+        run: |
+          mkdir -p ./cm-artifacts
+          GCS_SOURCE="gs://codemender-artifacts-cm-gh-506516/${REPO_NAME}/${TARGET_REF}"
+          if [ "${TARGET_PATH}" != "." ]; then
+            SLUG=$(echo "${TARGET_PATH}" | tr '/' '_')
+            GCS_SOURCE="${GCS_SOURCE}/${SLUG}"
+          fi
+          gcloud storage cp -r "${GCS_SOURCE}/*" ./cm-artifacts/ || true
+          if [ -f ./cm-artifacts/summary.md ]; then
+            cat ./cm-artifacts/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f ./cm-artifacts/cm-find.log ]; then
+            echo "<details><summary>📄 Raw CodeMender CLI Output [${TARGET_PATH}]</summary>" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat ./cm-artifacts/cm-find.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Artifacts to GitHub
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        if: always()
+        with:
+          name: codemender-manual-${{ github.run_id }}-${{ steps.slug.outputs.slug }}
+          path: ./cm-artifacts/
+          retention-days: 30

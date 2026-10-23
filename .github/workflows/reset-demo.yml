@@ -1,0 +1,142 @@
+name: Reset Demo Environment
+
+on:
+  schedule:
+    # Run automatically every Sunday at 03:00 UTC (Weekly Maintenance)
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      delete_issues:
+        description: 'Permanently delete all issues (or close all if deletion unavailable)'
+        type: boolean
+        default: true
+      close_all_prs:
+        description: 'Close all open Pull Requests & delete fix branches'
+        type: boolean
+        default: true
+      create_demo_pr:
+        description: 'Automatically seed and open a synthetic vulnerable demo PR'
+        type: boolean
+        default: false
+      run_baseline_scan:
+        description: 'Trigger baseline CodeMender scan to populate issues'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  reset-demo:
+    name: Reset Demo State
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2.1.8
+        with:
+          workload_identity_provider: 'projects/675447268546/locations/global/workloadIdentityPools/codemender-pool/providers/github-provider'
+          service_account: 'codemender-ci-dispatcher@cm-gh-506516.iam.gserviceaccount.com'
+
+      - name: Retrieve GitHub PAT from Google Cloud Secret Manager
+        id: get_token
+        run: |
+          PAT=$(gcloud secrets versions access latest --secret="codemender-github-token" --project="cm-gh-506516" 2>/dev/null || echo "")
+          if [ -z "${PAT}" ]; then
+            PAT="${{ secrets.CODEMENDER_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}"
+          fi
+          echo "::add-mask::${PAT}"
+          echo "GH_TOKEN=${PAT}" >> "$GITHUB_ENV"
+
+      - name: Clean Up Stale Demo PRs & Fix Branches
+        if: ${{ inputs.close_all_prs != false }}
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          echo "🧹 1. Closing open pull requests in ${REPO}..."
+          PRS=$(gh pr list --repo "${REPO}" --state open --json number --jq '.[].number' 2>/dev/null || true)
+          for pr in $PRS; do
+            echo "Closing PR #${pr}..."
+            gh pr close "$pr" --repo "${REPO}" --delete-branch 2>/dev/null || gh pr close "$pr" --repo "${REPO}" || true
+          done
+
+          echo "🧹 2. Deleting stale codemender/fix-* and demo feature branches..."
+          BRANCHES=$(gh api "repos/${REPO}/branches" --jq '.[].name | select(startswith("codemender/") or . == "feat/network-diagnostics" or . == "feat/system-diagnostics")' 2>/dev/null || true)
+          for b in $BRANCHES; do
+            echo "Deleting branch ${b}..."
+            gh api -X DELETE "repos/${REPO}/git/refs/heads/${b}" 2>/dev/null || true
+          done
+
+      - name: Clean Up Previous Demo Issues
+        if: ${{ inputs.delete_issues != false }}
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          echo "🧹 3. Removing or closing old tracking issues in ${REPO}..."
+          ISSUES=$(gh issue list --repo "${REPO}" --state all --limit 100 --json number --jq '.[].number' 2>/dev/null || true)
+          for issue in $ISSUES; do
+            echo "Removing Issue #${issue}..."
+            gh issue delete "$issue" --repo "${REPO}" --yes 2>/dev/null || gh issue close "$issue" --repo "${REPO}" || true
+          done
+
+      - name: Re-seed Fresh Demo Pull Request
+        if: ${{ inputs.create_demo_pr == true }}
+        env:
+          REPO: ${{ github.repository }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          echo "🌱 Seeding demo feature branch & opening PR..."
+          python3 scripts/seed_demo_pr.py
+
+      - name: Trigger Baseline Security Scan
+        if: ${{ inputs.run_baseline_scan != false }}
+        env:
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          TARGET_REF="${DEFAULT_BRANCH:-main}"
+          echo "🚀 Triggering baseline CodeMender scan on ${REPO} (${TARGET_REF})..."
+          gh workflow run codemender-manual.yml \
+            --repo "${REPO}" \
+            --ref "${TARGET_REF}" \
+            -f command=find \
+            -f target_ref="${TARGET_REF}" \
+            -f auto_create_pr=false 2>/dev/null || \
+          gh workflow run codemender-manual.yml \
+            --repo "${REPO}" \
+            -f command=find \
+            -f target_ref="main" \
+            -f auto_create_pr=false 2>/dev/null || echo "⚠️ Notice: could not dispatch manual workflow automatically."
+
+      - name: Publish Reset Summary
+        if: always()
+        env:
+          REPO_NAME: ${{ github.repository }}
+          DEMO_PR_CREATED: ${{ inputs.create_demo_pr == true }}
+        run: |
+          cat << EOF >> "$GITHUB_STEP_SUMMARY"
+          ## 🧼 Demo Repository Reset Complete!
+
+          The demo environment for **[\`${REPO_NAME}\`](https://github.com/${REPO_NAME})** has been reset to pristine condition.
+
+          | Action | Status |
+          | :--- | :--- |
+          | **Previous PRs & Branches Cleaned** | ✅ Completed |
+          | **Previous Issues Cleaned** | ✅ Completed |
+          | **Demo PR Re-seeded** | \`${DEMO_PR_CREATED}\` |
+          | **Baseline Scan** | Triggered |
+
+          ---
+
+          ### 🔗 Live Demo Links
+          - 🔀 [View Pull Requests](https://github.com/${REPO_NAME}/pulls)
+          - 🐞 [View Security Issues](https://github.com/${REPO_NAME}/issues)
+          - ⚙️ [View Actions Dashboard](https://github.com/${REPO_NAME}/actions)
+          EOF

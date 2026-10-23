@@ -1,0 +1,90 @@
+name: CodeMender Security Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, master, release/*]
+
+permissions:
+  contents: write
+  id-token: write # Required for Workload Identity Federation OIDC token
+  security-events: write
+  checks: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  codemender-scan:
+    name: CodeMender AI Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2.1.8
+        with:
+          workload_identity_provider: 'projects/675447268546/locations/global/workloadIdentityPools/codemender-pool/providers/github-provider'
+          service_account: 'codemender-ci-dispatcher@cm-gh-506516.iam.gserviceaccount.com'
+
+      - name: Trigger Cloud Run Worker Job
+        id: cm_scan
+        continue-on-error: true # Ensure subsequent steps execute to capture logs on failure
+        env:
+          GCP_REGION: ${{ vars.GCP_REGION || 'us-west1' }}
+          REPO_NAME: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ACTIONS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gcloud run jobs execute codemender-worker \
+            --region="${GCP_REGION}" \
+            --wait \
+            --update-env-vars="REPO=${REPO_NAME},HEAD_SHA=${HEAD_SHA},HEAD_BRANCH=${HEAD_BRANCH},BASE_REF=${BASE_REF},PR_NUMBER=${PR_NUMBER},COMMAND=all,SCAN_MODE=diff,SCAN_MODEL=gemini-3.8-flash,REMEDIATION_MODEL=gemini-4-argon,ACTIONS_BOT_TOKEN=${ACTIONS_TOKEN}"
+
+      - name: Download Logs & Artifacts from GCS
+        if: always()
+        env:
+          GCP_PROJECT: ${{ vars.GCP_PROJECT_ID || 'cm-gh-506516' }}
+          REPO_NAME: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p ./cm-artifacts
+          gcloud storage cp -r "gs://codemender-artifacts-${GCP_PROJECT}/${REPO_NAME}/${HEAD_SHA}/*" ./cm-artifacts/ || true
+
+      - name: Publish Action Step Summary
+        if: always()
+        run: |
+          if [ -f ./cm-artifacts/summary.md ]; then
+            cat ./cm-artifacts/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ❌ CodeMender Run Failed before producing summary." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Artifacts to GitHub
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        if: always()
+        with:
+          name: codemender-logs-${{ github.sha }}
+          path: ./cm-artifacts/
+          retention-days: 30
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@6bb031afdd8eb862ea3fc1848194185e076637e5 # v3.28.11
+        if: always() && hashFiles('./cm-artifacts/codemender.sarif') != ''
+        continue-on-error: true
+        with:
+          sarif_file: ./cm-artifacts/codemender.sarif
+          category: codemender-agent
+
+      - name: Evaluate Exit Status & Enforce PR Gate
+        if: steps.cm_scan.outcome != 'success'
+        run: |
+          echo "::error title=CodeMender Scan Failed::The security worker encountered an error. Check attached artifacts and logs for details."
+          exit 1

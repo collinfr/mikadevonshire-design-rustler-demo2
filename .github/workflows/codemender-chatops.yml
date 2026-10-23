@@ -1,0 +1,173 @@
+name: CodeMender ChatOps Handler
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  handle-chatops:
+    if: startsWith(github.event.comment.body, '/cm ') || startsWith(github.event.comment.body, '/codemender ')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Acknowledge Command with Reaction
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+
+      - name: Parse ChatOps Command & Finding ID
+        id: parse
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          # Extract command (fix, verify, find, hunt)
+          CMD=$(echo "$COMMENT_BODY" | awk '{print $2}')
+          if [ "$CMD" = "lookback" ]; then
+            CMD="hunt"
+          fi
+          
+          # Check for --skip-exploit or --skip-exploit-verification flag
+          SKIP_EXPLOIT="false"
+          if echo "$COMMENT_BODY" | grep -qE -- '--skip-exploit(-verification)?'; then
+            SKIP_EXPLOIT="true"
+          fi
+
+          # Check for --seed-demo flag (for cm hunt live demo log seeding)
+          SEED_DEMO="false"
+          if echo "$COMMENT_BODY" | grep -qE -- '--seed-demo'; then
+            SEED_DEMO="true"
+          fi
+
+          # Check for --days=N or Nd lookback override
+          LOOKBACK_DAYS=""
+          DAYS_MATCH=$(echo "$COMMENT_BODY" | grep -oP '(?<=--days=)[0-9]+|[0-9]+(?=d\b)' | head -n1 || true)
+          if [ -n "$DAYS_MATCH" ]; then
+            LOOKBACK_DAYS="$DAYS_MATCH"
+          fi
+
+          # Extract Vuln ID: first argument after command that does not start with '--' and is not a Nd lookback token
+          VULN_ID=$(echo "$COMMENT_BODY" | awk '{for(i=3;i<=NF;i++) if ($i !~ /^--/ && $i !~ /^[0-9]+d$/) {print $i; exit}}')
+          if [ -z "$VULN_ID" ]; then
+            VULN_ID=$(echo "$ISSUE_TITLE" | grep -oP '\([a-f0-9]{8}\)' | tr -d '()' || true)
+          fi
+          
+          echo "command=${CMD}" >> "$GITHUB_OUTPUT"
+          echo "vuln_id=${VULN_ID}" >> "$GITHUB_OUTPUT"
+          echo "skip_exploit=${SKIP_EXPLOIT}" >> "$GITHUB_OUTPUT"
+          echo "seed_demo=${SEED_DEMO}" >> "$GITHUB_OUTPUT"
+          echo "lookback_days=${LOOKBACK_DAYS}" >> "$GITHUB_OUTPUT"
+          echo "Parsed Command: ${CMD}, Vuln ID: ${VULN_ID}, Skip Exploit: ${SKIP_EXPLOIT}, Seed Demo: ${SEED_DEMO}, Lookback Days: ${LOOKBACK_DAYS}"
+
+      - name: Post Initial Status Comment
+        id: post_init
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          CMD: ${{ steps.parse.outputs.command }}
+          VULN_ID: ${{ steps.parse.outputs.vuln_id }}
+          SKIP_EXPLOIT: ${{ steps.parse.outputs.skip_exploit }}
+        with:
+          script: |
+            const cmd = process.env.CMD;
+            const vulnId = process.env.VULN_ID;
+            const skipExploit = process.env.SKIP_EXPLOIT === 'true';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const flagDesc = skipExploit ? ' *(static verification)*' : '';
+            const modelName = (cmd === 'find') ? 'gemini-3.8-flash (--deep)' : 'gemini-4-argon';
+            
+            const comment = await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `🛡️ **CodeMender** is executing \`cm ${cmd} ${vulnId}\` (\`${modelName}\`)${flagDesc}\n\n⏳ **Status:** Launching via Cloud Run\n🔗 **Run:** [View Execution](${runUrl})`
+            });
+            return comment.data.id;
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2.1.8
+        with:
+          workload_identity_provider: 'projects/675447268546/locations/global/workloadIdentityPools/codemender-pool/providers/github-provider'
+          service_account: 'codemender-ci-dispatcher@cm-gh-506516.iam.gserviceaccount.com'
+
+      - name: Execute Cloud Run Worker
+        id: run_worker
+        env:
+          REPO_NAME: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CMD: ${{ steps.parse.outputs.command }}
+          VULN_ID: ${{ steps.parse.outputs.vuln_id }}
+          SKIP_EXPLOIT: ${{ steps.parse.outputs.skip_exploit }}
+          SEED_DEMO: ${{ steps.parse.outputs.seed_demo }}
+          LOOKBACK_DAYS: ${{ steps.parse.outputs.lookback_days }}
+          ACTOR_NAME: ${{ github.actor }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          TARGET_REF="${DEFAULT_BRANCH:-main}"
+          echo "🚀 Executing CodeMender on Cloud Run (Command: ${CMD}, Vuln ID: ${VULN_ID}, Ref: ${TARGET_REF}, Skip Exploit: ${SKIP_EXPLOIT}, Seed Demo: ${SEED_DEMO})..."
+          gcloud run jobs execute codemender-worker \
+            --region="us-west1" \
+            --wait \
+            --update-env-vars="REPO=${REPO_NAME},REF=${TARGET_REF},COMMAND=bash /entrypoint.sh,CM_ACTION=${CMD},SCAN_MODE=deep,SCAN_MODEL=gemini-3.8-flash,REMEDIATION_MODEL=gemini-4-argon,VULN_ID=${VULN_ID},SKIP_EXPLOIT_VERIFICATION=${SKIP_EXPLOIT},SEED_DEMO_LOGS=${SEED_DEMO},LOOKBACK_DAYS=${LOOKBACK_DAYS},AUTO_PR=true,TRIGGER=chatops,ACTOR=${ACTOR_NAME},ISSUE_NUMBER=${ISSUE_NUMBER},ARTIFACTS_BUCKET=codemender-artifacts-cm-gh-506516"
+
+      - name: Post Completion Status Comment
+        if: always()
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          CMD: ${{ steps.parse.outputs.command }}
+          VULN_ID: ${{ steps.parse.outputs.vuln_id }}
+          SKIP_EXPLOIT: ${{ steps.parse.outputs.skip_exploit }}
+          OUTCOME: ${{ steps.run_worker.outcome }}
+        with:
+          script: |
+            const cmd = process.env.CMD;
+            const vulnId = process.env.VULN_ID;
+            const skipExploit = process.env.SKIP_EXPLOIT === 'true';
+            const outcome = process.env.OUTCOME;
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            
+            let statusEmoji = outcome === 'success' ? '✅' : '❌';
+            let statusText = outcome === 'success' ? 'completed' : 'failed';
+            
+            let extraDetails = '';
+            if (cmd === 'fix' && outcome === 'success') {
+              try {
+                const prs = await github.rest.pulls.list({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  head: `${context.repo.owner}:codemender/fix-${vulnId}`,
+                  state: 'all'
+                });
+                if (prs.data && prs.data.length > 0) {
+                  const pr = prs.data[0];
+                  extraDetails = `\n\n👉 **[Review Pull Request #${pr.number}: ${pr.title}](${pr.html_url})**`;
+                } else {
+                  extraDetails = `\n\n🔀 **Pull Request:** [View Pull Requests](https://github.com/${context.repo.owner}/${context.repo.repo}/pulls)`;
+                }
+              } catch (e) {
+                extraDetails = `\n\n🔀 **Pull Request:** [View Pull Requests](https://github.com/${context.repo.owner}/${context.repo.repo}/pulls)`;
+              }
+            } else if (cmd === 'verify' && outcome === 'success') {
+              extraDetails = skipExploit 
+                ? `\n\n🔬 Static code verification completed.` 
+                : `\n\n🔬 Sandbox exploit reproduction verified.`;
+            } else if (cmd === 'hunt' && outcome === 'success') {
+              extraDetails = `\n\n🕵️‍♂️ Google Cloud Logging forensic lookback completed.`;
+            }
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `${statusEmoji} **CodeMender:** \`cm ${cmd} ${vulnId}\` ${statusText}${extraDetails}\n\n🔗 **Details:** [View Run Summary](${runUrl})`
+            });
