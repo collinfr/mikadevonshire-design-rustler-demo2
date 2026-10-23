@@ -1,0 +1,35 @@
+🔍 Discovering files in /workspace/repo/rustler_sys...
+
+════════════════════════════════════════════════════════════
+🔍 Deep Scan: Concurrent File-by-File Vulnerability Audit...
+════════════════════════════════════════════════════════════
+🔍 Deep Scan Sifter: 6 total files discovered
+   Tier 0 Pruner: 2 safe files pruned (tests, docs, DTOs, generated, lockfiles) at 0 token cost
+   Tier 1 Sifter: 4 candidate files in 4 batches to scan with 4 workers
+
+🔒 Sandbox violations detected during session:
+sandbox: denied read /root/.codemender/config.yaml
+
+[1/4 batches] ✅ rustler_sys/build.rs (16.5s) | 23.7k tok - 0 vulnerabilities
+
+🔒 Sandbox violations detected during session:
+sandbox: denied read /root/.codemender/config.yaml
+
+[2/4 batches] ✅ rustler_sys/src/lib.rs (21.4s) | 8.9k tok - 0 vulnerabilities
+
+🔒 Sandbox violations detected during session:
+sandbox: denied read /root/.codemender/config.yaml
+
+[3/4 batches] ✅ rustler_sys/src/initmacro.rs (32.7s) | 18.6k tok - 0 vulnerabilities
+
+🔒 Sandbox violations detected during session:
+sandbox: denied read /root/.codemender/config.yaml
+
+[4/4 batches] ✅ rustler_sys/src/rustler_sys_api.rs (46.2s) | 18.1k tok - 0 vulnerabilities
+────────────────────────────────────────────────────────────
+📊 Deep Scan Sifter Complete: 6 files in 4 batches (2 pruned at Tier 0, 4 succeeded, 0 failed) in 47s
+   Session: ChAwOWJiZTkxN2I2NjdjMTc0EAgaAjcwKgRtYWlu
+   Total tokens consumed: 69.3k (in: 50.1k, cached: 0, out: 761, thinking: 18.4k)
+
+✅ No vulnerabilities found!
+2026-10-23T19:28:25Z [INFO]  📄 Session log: /root/.codemender/logs/20261023T192737Z_ChAwOWJiZTkxN2I2NjdjMTc0EAgaAjcwKgRtYWlu.log

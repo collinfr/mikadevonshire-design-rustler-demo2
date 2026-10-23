@@ -1,0 +1,2 @@
+{"args":[],"cli_version":"0.16.0","command_id":"c393f0cb-06cf-4cf5-8d19-a5fb5b110ed2","command_type":"init","is_sandboxed":true,"schema_version":"1","session_id":"","team_id":"","ts":"2026-10-23T19:27:37.611969641Z","type":"command_start","working_dir":"/workspace/repo"}
+{"cli_version":"0.16.0","command_id":"c393f0cb-06cf-4cf5-8d19-a5fb5b110ed2","duration_ms":34,"exit_code":0,"schema_version":"1","session_id":"","ts":"2026-10-23T19:27:37.612080400Z","type":"command_finish"}
