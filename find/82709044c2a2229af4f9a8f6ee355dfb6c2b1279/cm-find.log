@@ -1,0 +1,37 @@
+
+════════════════════════════════════════════════════════════
+🔍 Impact-Aware PR Delta Scan (--diff=merge-base(origin/main))
+════════════════════════════════════════════════════════════
+   Modified files in PR: 1
+     • rustler_codegen/Cargo.toml
+   Running 1 diff audit jobs with 1 concurrent workers...
+
+2026-10-23T19:29:50Z [INFO]  🔧 [Step 1] list_dir → /workspace/repo
+2026-10-23T19:29:50Z [INFO]     ✅ Tool completed: list_dir (took 0s)
+2026-10-23T19:29:51Z [INFO]     📤 Result submitted (submit 1.598s)
+2026-10-23T19:29:59Z [INFO]  🔧 [Step 2] list_dir → …/workspace/repo/rustler_codegen
+2026-10-23T19:29:59Z [INFO]     ✅ Tool completed: list_dir (took 0s)
+2026-10-23T19:30:00Z [INFO]     📤 Result submitted (submit 1.522s)
+2026-10-23T19:30:05Z [INFO]  🔧 [Step 3] read_file → …/workspace/repo/Cargo.toml
+2026-10-23T19:30:05Z [INFO]     ✅ Tool completed: read_file (took 0s)
+2026-10-23T19:30:07Z [INFO]     📤 Result submitted (submit 1.634s)
+2026-10-23T19:30:14Z [INFO]  🔧 [Step 4] list_dir → …/repo/rustler_codegen/src
+2026-10-23T19:30:14Z [INFO]     ✅ Tool completed: list_dir (took 0s)
+2026-10-23T19:30:15Z [INFO]     📤 Result submitted (submit 1.734s)
+2026-10-23T19:30:23Z [INFO]  🔧 [Step 5] read_file → …/rustler_codegen/src/lib.rs
+2026-10-23T19:30:23Z [INFO]     ✅ Tool completed: read_file (took 1ms)
+2026-10-23T19:30:25Z [INFO]     📤 Result submitted (submit 1.742s)
+2026-10-23T19:30:34Z [INFO]  ✅ Completed 5 tool steps in 49s | Tokens: 34k in / 163 out / 36k total
+
+🔒 Sandbox violations detected during session:
+sandbox: denied read /root/.codemender/config.yaml
+
+[1/1] ✅ rustler_codegen/Cargo.toml [changed] (48.9s) | 36.5k tok - 0 vulnerabilities
+────────────────────────────────────────────────────────────
+📊 PR Delta Scan Complete: 1 jobs (1 succeeded, 0 failed) in 50s
+   Session: ChA4ZGQ5NWM0NThlZWFlZWFmEAgaAmU0KgRtYWlu
+   Total tokens consumed: 36.5k (in: 34.0k | out: 163 | thought: 2.3k | tool: 0)
+No findings. Run 'cm find <path>' to scan for vulnerabilities.
+
+✅ CI Gate Passed: 0 blocking vulnerabilities detected in PR diff.
+2026-10-23T19:30:34Z [INFO]  📄 Session log: /root/.codemender/logs/20261023T192944Z_ChA4ZGQ5NWM0NThlZWFlZWFmEAgaAmU0KgRtYWlu.log

@@ -1,0 +1,35 @@
+=== CodeMender session log started at 2026-10-23T19:30:35Z ===
+2026-10-23T19:30:35Z [WARN ] Skipping the automatic update check: not an interactive terminal. Run 'cm update' to update explicitly.
+# CodeMender Security Report
+
+✅ No findings.
+2026-10-23T19:30:35Z [INFO ] 📄 Session log: /root/.codemender/logs/20261023T193035Z_pending.log
+=== Session log ended at 2026-10-23T19:30:35Z ===
+=== CodeMender session log started at 2026-10-23T19:30:35Z ===
+[]
+2026-10-23T19:30:35Z [INFO ] 📄 Session log: /root/.codemender/logs/20261023T193035Z_pending.log
+=== Session log ended at 2026-10-23T19:30:35Z ===
+=== CodeMender session log started at 2026-10-23T19:30:35Z ===
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "CodeMender",
+          "version": "dev",
+          "rules": []
+        }
+      },
+      "results": []
+    }
+  ]
+}
+2026-10-23T19:30:35Z [INFO ] 📄 Session log: /root/.codemender/logs/20261023T193035Z_pending.log
+=== Session log ended at 2026-10-23T19:30:35Z ===
+=== CodeMender session log started at 2026-10-23T19:30:35Z ===
+📄 HTML report written to file:///root/.codemender/reports/report.html
+💡 Hint: use --open to open the report in your browser
+2026-10-23T19:30:35Z [INFO ] 📄 Session log: /root/.codemender/logs/20261023T193035Z_pending.log
+=== Session log ended at 2026-10-23T19:30:35Z ===
